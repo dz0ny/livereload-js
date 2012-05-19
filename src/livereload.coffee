@@ -67,6 +67,8 @@ exports.LiveReload = class LiveReload
         switch message.command
           when 'reload' then @performReload(message)
           when 'alert'  then @performAlert(message)
+          when 'url'  then @performURL(message)
+          when 'plugin'  then @performPlugin(message)
 
   on: (eventName, handler) ->
     @listeners[eventName] = handler
@@ -85,6 +87,12 @@ exports.LiveReload = class LiveReload
 
   performAlert: (message) ->
     alert message.message
+
+  performURL: (message) ->
+    document.location = message.url
+
+  performPlugin: (message) ->
+    @processPluginCommand message
 
   shutDown: ->
     @connector.disconnect()
@@ -142,4 +150,13 @@ exports.LiveReload = class LiveReload
       pluginData.version = plugin.constructor.version
 
     @connector.sendCommand { command: 'info', plugins: pluginsData, url: @window.location.href }
+    return
+
+  processPluginCommand: (message)->
+    return unless @connector.protocol >= 7
+
+    for plugin in @plugins
+      if plugin.constructor.identifier == message.identifier
+        plugin?.processCommand? message       
+      
     return

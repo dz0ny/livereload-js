@@ -38,7 +38,7 @@ exports.Parser = class Parser
 
         @handlers.message command: 'reload', path: options.path, liveCSS: options.apply_css_live ? yes
       else
-        message = @_parseMessage(data, ['reload', 'alert'])
+        message = @_parseMessage(data, ['reload', 'alert', 'url', 'plugin'])
         @handlers.message(message)
     catch e
       if e instanceof ProtocolError
