@@ -63,7 +63,6 @@ exports.Reloader = class Reloader
 
   constructor: (@window, @console, @Timer) ->
     @document = @window.document
-    @stylesheetGracePeriod = 200
     @importCacheWaitPeriod = 200
     @plugins = []
 
@@ -78,6 +77,7 @@ exports.Reloader = class Reloader
 
   reload: (path, options) ->
     @options = options  # avoid passing it through all the funcs
+    @options.stylesheetReloadTimeout ?= 15000
     for plugin in @plugins
       if plugin.reload && plugin.reload(path, options)
         return
@@ -157,15 +157,20 @@ exports.Reloader = class Reloader
     for link in links
       @collectImportedStylesheets link, link.sheet, imported
 
+    # handle prefixfree
+    if @window.StyleFix && @document.querySelectorAll
+      for style in @document.querySelectorAll('style[data-href]')
+        links.push style
+
     @console.log "LiveReload found #{links.length} LINKed stylesheets, #{imported.length} @imported stylesheets"
-    match = pickBestMatch(path, links.concat(imported), (l) -> pathFromUrl(l.href))
+    match = pickBestMatch(path, links.concat(imported), (l) => pathFromUrl(@linkHref(l)))
 
     if match
       if match.object.rule
         @console.log "LiveReload is reloading imported stylesheet: #{match.object.href}"
         @reattachImportedRule(match.object)
       else
-        @console.log "LiveReload is reloading stylesheet: #{match.object.href}"
+        @console.log "LiveReload is reloading stylesheet: #{@linkHref(match.object)}"
         @reattachStylesheetLink(match.object)
     else
       @console.log "LiveReload will reload all stylesheets because path '#{path}' did not match any specific one"
@@ -194,13 +199,55 @@ exports.Reloader = class Reloader
     return
 
 
+  waitUntilCssLoads: (clone, func) ->
+    callbackExecuted = no
+
+    executeCallback = =>
+      return if callbackExecuted
+      callbackExecuted = yes
+      func()
+
+    # supported by Chrome 19+, Safari 5.2+, Firefox 9+, Opera 9+, IE6+
+    # http://www.zachleat.com/web/load-css-dynamically/
+    # http://pieisgood.org/test/script-link-events/
+    clone.onload = =>
+      console.log "onload!"
+      @knownToSupportCssOnLoad = yes
+      executeCallback()
+
+    unless @knownToSupportCssOnLoad
+      # polling
+      do poll = =>
+        if clone.sheet
+          console.log "polling!"
+          executeCallback()
+        else
+          @Timer.start 50, poll
+
+    # fail safe
+    @Timer.start @options.stylesheetReloadTimeout, executeCallback
+
+
+  linkHref: (link) ->
+    # prefixfree uses data-href when it turns LINK into STYLE
+    link.href || link.getAttribute('data-href')
+
+
   reattachStylesheetLink: (link) ->
     # ignore LINKs that will be removed by LR soon
     return if link.__LiveReload_pendingRemoval
     link.__LiveReload_pendingRemoval = yes
 
-    clone = link.cloneNode(false)
-    clone.href = @generateCacheBustUrl(link.href)
+    if link.tagName is 'STYLE'
+      # prefixfree
+      clone = @document.createElement('link')
+      clone.rel      = 'stylesheet'
+      clone.media    = link.media
+      clone.disabled = link.disabled
+    else
+      clone = link.cloneNode(false)
+
+    clone.href = @generateCacheBustUrl(@linkHref(link))
 
     # insert the new LINK before the old one
     parent = link.parentNode
@@ -209,10 +256,18 @@ exports.Reloader = class Reloader
     else
         parent.insertBefore clone, link.nextSibling
 
-    # give the browser some time to parse the new stylesheet, then remove the old one
-    timer = new @Timer ->
-      link.parentNode.removeChild(link) if link.parentNode
-    timer.start(@stylesheetGracePeriod)
+    @waitUntilCssLoads clone, =>
+      if /AppleWebKit/.test(navigator.userAgent)
+        additionalWaitingTime = 5
+      else
+        additionalWaitingTime = 200
+
+      @Timer.start additionalWaitingTime, =>
+        return if !link.parentNode
+        link.parentNode.removeChild(link)
+        clone.onreadystatechange = null
+
+        @window.StyleFix?.link(clone) # prefixfree
 
 
   reattachImportedRule: ({ rule, index, link }) ->
